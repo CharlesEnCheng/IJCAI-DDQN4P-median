@@ -28,7 +28,7 @@ ___
 ### utils.py
 *(1) Common Functions - used by all three methods*
 
-    '**Log**: input <feature/gnn/concat>; record vlidation results during training. '
+    '**Log**: input <feature/gnn/concat>; record vlidation results during training.'
     -**get_graphs**: input <train/test/valid>; return all files matching c,d,mode in the folder. 
     -**normalise**: input features(node representations); return normalised features. if a feature column's std = 0, skip the column.
     -**summary**: input validation results; return the summaried results and log texts.
