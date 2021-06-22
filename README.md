@@ -43,7 +43,7 @@ ___
  - **agment**: input instance, n; return another format of the instance for gnn related computations.
  - **get_adj_matrix**: input instance (returned from *agment()*); return the adjacent matrix of an instance.
  - **get_dist_info**: input instance (returned from *agment()*), weights\_model; return the sum of embedded weights of all incident edges to a node. As such, if there are 5 facilities and 5 customers, the returned matrix will be R<sub>10\*d</sub> *Note*: *weights_model* is a torch model created from *get_embed_weights(nn.Module)* defined in the three approaches, respectively.
- - ***Explanation***: *embed* is to do the embedding for T times, and  *get_values* is to get the value of a node<u>
+ - ***Note***: *embed* is to do the embedding for T times, and  *get_values* is to get the value of a node<u>
  - **embed**: input embed_x, embed_u, embed_model, adj_mat, edge_mat; return updated embed_u, sum_nodes (sum of the updated embed_u). *Note*: *embed_x* is a list of if a node is picked/supplied, R<sub>2n</sub>. *embed_u* is the embedding, R<sub>2n\*d</sub>. *embed_model* defined in the 3 approaches, adj_mat returned from *get_adj_matrix()* and edge_mat from *get_dist_info()*. 
  - **get_values**: input embed_x, embed_u, embed_model, value_model, adj_mat, edge_mat, k; return embed_u, value_tensor, sum_nodes. *Note*: *embed_u* is the updated one, sum_nodes is the same as *embed()*'s return, and value_tensor is the predicted value of each node.
 
