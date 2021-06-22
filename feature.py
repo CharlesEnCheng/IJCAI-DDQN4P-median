@@ -13,120 +13,41 @@ Created on Sat May 22 20:47:45 2021
 # ====================================================== #  
 
 from copy import deepcopy as cp
-import pandas as pd
 import random
 import numpy as np
 import torch
 from torch import nn
 import torch.optim as optim
 from xpress_ver0417 import get_format, get_solution_pmedian
-from torch.autograd import Variable
 from config import conf
 from utils import Log, get_graphs
+from utils import get_features, normalise, summary, update_features
+from utils import get_left_customer, stop, pick_action, get_cost
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")  
 torch.backends.cudnn.enabled = False
 torch.backends.cudnn.benchmark = False
 
+
 # ====================================================== # 
 #                                                        #
 #                                                        #
 #                                                        #
 # ====================================================== #  
 
-def agment(instance, n):
-    instance2 = np.array(instance)
-    instance2[:,1] += n
-    
-    instance3 = []
-    for i in range(n, 2*n):
-        for row in instance2:
-            if row[1] == i:
-                instance3.append([row[1], row[0], row[2]])
-    instance3 = np.array(instance3)
-    instance4 = np.concatenate((instance2, instance3), axis= 0)
-    instance4 = instance4.tolist()
-    return instance4
+"""
+the model structure for estimating the values of facility nodes.
+variable features is like [feature] and 
+feature is like
+        f1,   f2,   f3,...   f10
+node1
+node2
+...
+nodeN
 
-def get_adj_matrix(instance: list):
-    n = instance[0][0] * 2
-    adj_mat = torch.zeros(n, n)
-    for i, j, val in instance[1:]:
-        adj_mat[i][j] = 1
-    adj_mat = adj_mat
-    return adj_mat
-
-def get_features(n, k, instance):
-    
-    instance_df = pd.DataFrame(instance, columns = ['facility', 'customer', 'edge'])
-    neighbour_num = instance_df.groupby(['facility'])['customer'].count().values
-    
-    percent_paras = [1, 25, 50, 75, 99]
-    percent_array = np.zeros((n, len(percent_paras)))
-    index = 0
-    for percent in percent_paras:
-        percent_array[:,index] = instance_df.groupby(['facility'])['edge']\
-                               .apply(list).apply(lambda x: np.percentile(x, percent))
-        index += 1
-    min_support_dict = instance_df.groupby(['customer'])['facility'].count().reset_index().values
-    min_support_dict = {i[0]:i[1] for i in min_support_dict}
-    tmp_support = instance_df.groupby(['facility'])['customer'].apply(list).apply(lambda x:[min_support_dict[i] for i in x])
-    min_support = tmp_support.apply(lambda x: min(x)).values
-    
-    left_weights = instance_df.groupby(['facility'])['edge'].sum().values
-    features = np.zeros((n, 5 + len(percent_paras)))
-    features[:,0] = neighbour_num
-    features[:,1:1+len(percent_paras)] = percent_array
-    features[:,1+len(percent_paras)] = neighbour_num # at first, they are not satisified
-    features[:,2+len(percent_paras)] = left_weights
-    features[:,3+len(percent_paras)] = k    
-    features[:,4+len(percent_paras)] = min_support    
-        
-    return features
-
-def normalise(data):
-    for col in range(data.shape[1]):
-        if data[:,col].std() == 0: pass
-        else: 
-            data[:,col] = (data[:,col] - data[:,col].mean())/data[:,col].std()
-    return data
-    
-def summary(aList):
-    feasible_number = 0
-    feasible_opt_solu = 0    
-    feasible_app_solu = 0  
-    infeasible_number = 0
-    infeasible_app_solu= 0
-    
-    for row in aList:
-        if row[4] > row[3]: 
-            infeasible_number += 1
-            infeasible_app_solu += row[4]
-        else: 
-            feasible_number += 1
-            feasible_opt_solu += row[1]
-            feasible_app_solu += row[2]
-       
-    try:  avgOpt = str(round(feasible_opt_solu/ feasible_number, 2)) 
-    except: avgOpt = 'nan'
-    avgOpt = (8-len(avgOpt))*' ' + avgOpt  
-    try:  avgApp = str(round(feasible_app_solu/ feasible_number, 2)) 
-    except: avgApp = 'nan'
-    avgApp = (8-len(avgApp))*' ' + avgApp  
-    try:  avginfK = str(round(infeasible_app_solu/ infeasible_number, 1)) 
-    except: avginfK = 'nan'
-    avginfK = (4-len(avginfK))*' ' + avginfK  
-    
-    text = 'FN:{0:03}; FAvgOpt:{1}; FAvgApp:{2}; IFN:{3:03}; IFAvgK:{4};'\
-        .format(feasible_number, avgOpt, avgApp, infeasible_number, avginfK)
-    return text, feasible_number, float(avgApp)
-    
-# ====================================================== # 
-#                                                        #
-#                                                        #
-#                                                        #
-# ====================================================== #  
-
+As such, variable value will be like
+v1, v2, ... vN
+"""
 class ValueModel(nn.Module):
     def __init__(self, feature_size, seed = 42):
         super().__init__()
@@ -154,10 +75,7 @@ class ValueModel(nn.Module):
 class Memory:
     def __init__(self, nf, model, tar_model):
         self.num_data = 0
-        self.num_fatal = 0
-        
         self.max_num_data = 0
-        self.max_num_fatal = 0
         
         self.loss = nn.MSELoss()
         self.batch = conf.memory.batch
@@ -172,7 +90,6 @@ class Memory:
         self.data_reward = torch.rand(self.memory_size, 1)
         self.data_solution = [True for i in range(self.memory_size)]
         
-        
         self.tar_model = tar_model
         self.model = model
         self.optimiser = optim.Adam(self.model.parameters(), lr = 0.0001)
@@ -181,6 +98,25 @@ class Memory:
         self.y = torch.rand(self.batch, 1)
         
     def memorise(self, memory, target, done, reward, solution):
+        """
+        Parameters
+        ----------
+        memory : torch.array R 1*10
+            the picked action's node representation
+        target : torch.array R n*10
+            the next state's node representations
+        done : bool
+            1 represents for the final state; 0 vice versa
+        reward : torch[int]
+            reward from taking(picking) an action(node)
+        solution : List
+            current facilities that have been picked.
+
+        Returns
+        -------
+        None.
+
+        """
         self.data_x_f[self.num_data] = memory[0].view(1,-1)
         self.data_y_f[self.num_data] = target[0]
         
@@ -204,31 +140,32 @@ class Memory:
             self.max_num_data = self.memory_size
 
             
+        # sample from memory
         sample_index1 = random.sample(range(self.max_num_data), self.batch)
-
         self.x_f[:self.batch,:] = self.data_x_f[sample_index1,:].detach()
-
         tmp_done = self.data_done[sample_index1,:]
         tmp_reward = self.data_reward[sample_index1,:]
         
         
         for i in range(self.batch):
+            # if the state is the final state, the label will be the reward
             if tmp_done[i] == True:
-                self.y[:self.batch,:] = tmp_reward[i]     
+                self.y[:self.batch,:] = tmp_reward[i]    
+            # if not, the label = reward + gamma*max(Q)
+            # variable val_ = max(Q)
             elif tmp_done[i] == False:
 
                 tmp4 = self.data_y_f[sample_index1[i]].detach() 
                 tmp0 = self.tar_model([tmp4])
                 
                 action_ = pick_action(tmp0.shape[0], 0, 
-                                     self.data_solution[sample_index1[i]], 
-                                     tmp0)
+                                      self.data_solution[sample_index1[i]], tmp0)
                 val_ = tmp0[action_].detach().clone()
                 
                 self.y[i] = (tmp_reward[i] + gamma*val_).detach().clone()
                 del tmp4, tmp0, val_
             else:
-                print('There are bugs')
+                print('There are bugs =P')
 
         out  = self.model([self.x_f.detach()])
 
@@ -238,62 +175,8 @@ class Memory:
         self.optimiser.step()  
 
         del out, mse
-        del sample_index1#, sample_index2
+        del sample_index1
         
- 
-
-# ====================================================== # 
-#                                                        #
-#                                                        #
-#                                                        #
-# ====================================================== # 
-
-def get_left_customer(n, instance, solution):
-    served = list(set([i[1] for i in instance if i[0] in solution]))
-    return list(set(range(n)).difference(set(served)))
-
-def stop(left, solution, k):
-    if left == [] and len(solution) >= k:
-        return True
-    else: return False
-
-           
-def pick_action(n, cur_epi, solution, value_tensor):
-    available_actions = list(set(range(n)).difference(set(solution)))
-    if np.random.rand() < cur_epi:
-        return random.choice(available_actions)
-    else:
-        return available_actions[torch.argmax(value_tensor[available_actions])]
-
-def update_features(n, instance, left, features):
-    left_tmp = [i for i in instance if i[1] in left]
-    left_feature = torch.zeros(n)
-    left_weights = torch.zeros(n)
-    left_support_customer = torch.zeros(n)
-    left_support = torch.ones(n) * n
-    for i in left_tmp: 
-        left_feature[i[0]] += 1
-        left_weights[i[0]] += i[2]
-        left_support_customer[i[1]] += 1
-        
-    for i in left_tmp:
-        if left_support_customer[i[1]] < left_support[i[0]]:
-            left_support[i[0]] = left_support_customer[i[1]]
-
-    features[:,-4] = left_feature
-    features[:,-3] = left_weights
-    features[:,-1] = left_support
-    return features
-    
-def get_cost(n, k, instance, left, solution):
-    served = list(set(range(n)).difference(set(left)))
-    cost = 0
-    for node in served:
-        cost -= min([i[2] for i in instance if i[1] == node and i[0] in solution])
-    #if len(solution) > k: cost += (len(solution) - k)*penalty
-    if len(solution) > k: cost += penalty
-    return cost
-
 
 # ====================================================== # 
 #                                                        #
@@ -306,18 +189,19 @@ if True: # parameters and init
     min_epi = conf.general.min_epi
     decay_epi = conf.general.decay_epi
     
-    penalty = conf.general.penalty
     gamma = conf.rl.gamma
     
     train_graphs = sorted(get_graphs('train/'))
     valid_graphs = sorted(get_graphs('valid/'))
-    test_graphs  = sorted(get_graphs('test/'))
 
     n_replay = conf.general.n_replay
     recorded_optimal = [False for i in range(len(valid_graphs))]
     p_dim = conf.general.num_features
-    run_valid = 10
+    run_valid = 10 # run validation every 10 training graphs
     
+    # for recording feasible rate and the cost.
+    # max_fn and max_app are the higher the better
+    # when reaching higher values, the model will be saved.
     max_fn = 0
     max_app = -float('inf')
 
@@ -346,6 +230,7 @@ for figure in range(len(train_graphs)):
     
     for replay in range(n_replay):
           
+        # init when every time replay
         features = get_features(n, k, instance)
         features = normalise(features)
         features = torch.tensor(features).type(torch.float).detach()  
@@ -353,8 +238,6 @@ for figure in range(len(train_graphs)):
         last_cost = 0
         solution = []
         left = get_left_customer(n, instance, solution)
-        x = torch.zeros(2*n, 1, dtype=torch.float).detach()
-        discount = 0
         
         while not stop(left, solution, k):   
             features_cp = features.detach().clone()
@@ -364,9 +247,6 @@ for figure in range(len(train_graphs)):
             solution.append(action)
             left = get_left_customer(n, instance, solution)
             
-            for i in solution: x[i] = 1
-            x[n:2*n] = 1
-            for i in left: x[i+n] = 0
             
             if stop(left, solution, k):
                 done = True
@@ -375,7 +255,6 @@ for figure in range(len(train_graphs)):
                 done = False
                 features = update_features(n, instance, left, features).detach()
                 features = normalise(features)
-                #features[:,-2] -= 1
 
                 current_cost = get_cost(n, k, instance, left, solution)
                 reward = current_cost - last_cost
@@ -392,15 +271,14 @@ for figure in range(len(train_graphs)):
                 value_model_target.load_state_dict(memory.model.state_dict())
             
             steps += 1
-            discount += 1
             del value_tensor
             try:
                 del embed_features_, value_tensor_, sum_features_
             except: pass
 
     if figure%run_valid == 0 and figure > 0:
-        n = 15
-        k = 5
+        n = int(valid_graphs[0].split('_')[4])
+        k = int(valid_graphs[0].split('_')[5].split('.')[0])
         valid_info = []
         
         for valid_data in range(len(valid_graphs)):
@@ -420,9 +298,7 @@ for figure in range(len(train_graphs)):
             last_cost = 0
             solution = []
             left = get_left_customer(n, instance, solution)
-            x = torch.zeros(2*n, 1, dtype=torch.float).detach()
-            discount = 0
-            
+
             while not stop(left, solution, k):   
                 value_tensor = value_model_target([features])
     
@@ -430,13 +306,9 @@ for figure in range(len(train_graphs)):
                 solution.append(action)
                 left = get_left_customer(n, instance, solution)
                 
-                for i in solution: x[i] = 1
-                x[n:2*n] = 1
-                for i in left: x[i+n] = 0
-                
                 features = update_features(n, instance, left, features).detach()
                 features = normalise(features)
-                #features[:,-2] -= 1
+
             cost = get_cost(n, k, instance, left, solution)
             valid_info.append([valid_data, optimal, cost, k, len(solution)])
             
