@@ -6,30 +6,15 @@ Created on Fri May 21 11:27:47 2021
 @author: en-chengchang
 """
 
-"""
-feature = True; gnn = False ==> feature based
-feature = False; gnn = True ==> fixed gnn
-feature & gnn = True; concat = True ==> two feature sets
-feature & gnn = True; concat = False ==> embed on features
-"""
-
-"""
-best_memory_play = memory set for recording play with the best obj 
-"""
-
 class conf:
 
     class general:
-        c = 20
-        d = 50
-        mode = 1
+        c = 100
+        d = 400
+        mode = 0
         
         seed = 42
-        
-        feature = False
-        gnn = True
-        concat = False
-        
+
         cur_epi = 1
         min_epi = 0.1
         decay_epi = 0.999
@@ -42,6 +27,7 @@ class conf:
         data = './instance/'
         log  = './log/'
         model = './model/'
+        xpress = '/Users/en-chengchang/Desktop/FICO/'
         
     class rl:
         gamma = 1
@@ -55,7 +41,5 @@ class conf:
         max_cap = 10**5
         lr = 0.0001
         batch = 64
-        best_memory_play = False
-        
-        
-    
+
+ 
