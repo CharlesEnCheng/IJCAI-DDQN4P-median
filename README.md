@@ -28,8 +28,8 @@ ___
 ### utils.py
 *(1) Common Functions - used by all three methods*
 
-[tab]**Log**: input <feature/gnn/concat>; record vlidation results during training.
-[tab]**get_graphs**: input <train/test/valid>; return all files matching c,d,mode in the folder. 
+: **Log**: input <feature/gnn/concat>; record vlidation results during training.
+: **get_graphs**: input <train/test/valid>; return all files matching c,d,mode in the folder. 
 [tab]**normalise**: input features(node representations); return normalised features. if a feature column's std = 0, skip the column.
 [tab]**summary**: input validation results; return the summaried results and log texts.
 
